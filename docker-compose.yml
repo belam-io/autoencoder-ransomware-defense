@@ -1,0 +1,96 @@
+services:
+  kafka:
+    image: apache/kafka-native
+    container_name: kafka
+    ports:
+      - "9092:9092"
+      - "9091:9091"
+      - "9093:9093"
+    environment:
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENERS: CONTROLLER://0.0.0.0:9091,HOST://0.0.0.0:9092,DOCKER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: HOST://localhost:9092,DOCKER://kafka:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,DOCKER:PLAINTEXT,HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@0.0.0.0:9091
+      KAFKA_INTER_BROKER_LISTENER_NAME: DOCKER
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_CLUSTER_ID: "kraft-cluster-1"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+
+
+
+  kafka_ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka_ui
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: ""  
+    ports:
+      - "9001:8080"
+    depends_on:
+      - kafka
+
+  mongo:
+    image: mongo:6.0.18
+    restart: on-failure
+    volumes:
+      - mongo_data:/data/db
+      - mongo_config:/data/configdb
+    ports:
+      - "27017:27017"
+
+  opensearch:
+    image: opensearchproject/opensearch:2.15.0
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+    volumes:
+      - opensearch:/usr/share/opensearch/data"
+
+  graylog:
+    image: graylog/graylog:6.1
+    depends_on:
+      - mongo
+      - opensearch
+      - kafka
+    environment:
+      GRAYLOG_NODE_ID_FILE: /usr/share/graylog/data/config/node-id
+      GRAYLOG_HTTP_BIND_ADDRESS: 0.0.0.0:9000
+      GRAYLOG_ELASTICSEARCH_HOSTS: http://opensearch:9200
+      GRAYLOG_MONGODB_URI: mongodb://mongo:27017/graylog
+      GRAYLOG_REPORT_DISABLE_SANDBOX: "true"
+      GRAYLOG_HTTP_EXTERNAL_URI: http://127.0.0.1:9000/
+      GRAYLOG_PASSWORD_SECRET: ${GRAYLOG_PASSWORD_SECRET}
+      GRAYLOG_ROOT_PASSWORD_SHA2: ${GRAYLOG_ROOT_PASSWORD_SHA2}
+    ports:
+      - "9000:9000"
+      - "5044:5044"
+      - "5140:5140"
+      - "5140:5140/udp"
+      - "12201:12201"
+      - "12201:12201/udp"
+      - "13301:13301"
+      - "13302:13302"
+    volumes:
+      - graylog_data:/usr/share/graylog/data
+
+volumes:
+  kafka_data:
+  mongo_data:
+  mongo_config:
+  opensearch:
+  graylog_data:
