@@ -6,17 +6,26 @@ def load_data(file_path: str) -> pd.DataFrame:
     return pd.read_csv(file_path)
 
 def preprocess(data: pd.DataFrame):
+    # Separate target if it exists
     if 'target' in data.columns:
         target = data['target']
         data = data.drop(columns=['target'])
     else:
         target = None
 
-    scaler = MinMaxScaler()
-    scaled = scaler.fit_transform(data)
+    # Select numeric columns
+    numeric_cols = data.select_dtypes(include=['int64', 'float64']).columns
+    numerical_data = data[numeric_cols]
 
-    scaled_df = pd.DataFrame(scaled, columns=data.columns)
+    # Scale numeric data
+    scaler = MinMaxScaler()
+    scaled = scaler.fit_transform(numerical_data)
+
+    # Convert back to DataFrame
+    scaled_df = pd.DataFrame(scaled, columns=numeric_cols)
+    
     return scaled_df, target
+
 
 def split_data(file_path: str, test_size: float = 0.1, random_state: int = 42):
     raw_data = load_data(file_path)

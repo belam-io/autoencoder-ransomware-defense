@@ -2,7 +2,7 @@ import torch
 from autoencoder.data import split_data
 from autoencoder.train import train_the_model
 
-train_data, split_data = split_data('')
+train_data, split_data = split_data('data/mpesa_part_001.csv')
 
 train_tensor = torch.tensor(train_data, dtype=torch.float32)
 
@@ -13,3 +13,6 @@ model, errors, threshold, anomalies = train_the_model(
     epochs=50,
     save_path="models/autoencoder.pth"
 )
+
+if __name__ == "__main__":
+    main()
