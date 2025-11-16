@@ -14,5 +14,3 @@ model, errors, threshold, anomalies = train_the_model(
     save_path="models/autoencoder.pth"
 )
 
-if __name__ == "__main__":
-    main()
