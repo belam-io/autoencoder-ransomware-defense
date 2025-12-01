@@ -1,96 +1,100 @@
+version: '3.8'
+
+networks:
+  autoencoder-net:
+    driver: bridge
+
 services:
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:latest
+    container_name: autoencoder-ransomware-defense_zookeeper_1
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    networks:
+      - autoencoder-net
+
   kafka:
-    image: apache/kafka-native
-    container_name: kafka
+    image: confluentinc/cp-kafka:latest
+    container_name: autoencoder-ransomware-defense_kafka_1
+    depends_on:
+      - zookeeper
     ports:
       - "9092:9092"
-      - "9091:9091"
-      - "9093:9093"
+      - "29092:29092"
     environment:
-      KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_NODE_ID: 1
-      KAFKA_LISTENERS: CONTROLLER://0.0.0.0:9091,HOST://0.0.0.0:9092,DOCKER://0.0.0.0:9093
-      KAFKA_ADVERTISED_LISTENERS: HOST://localhost:9092,DOCKER://kafka:9093
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,DOCKER:PLAINTEXT,HOST:PLAINTEXT
-      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@0.0.0.0:9091
-      KAFKA_INTER_BROKER_LISTENER_NAME: DOCKER
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_CLUSTER_ID: "kraft-cluster-1"
-    volumes:
-      - kafka_data:/var/lib/kafka/data
+    networks:
+      - autoencoder-net
 
-
-
-  kafka_ui:
-    image: provectuslabs/kafka-ui:latest
-    container_name: kafka_ui
-    environment:
-      KAFKA_CLUSTERS_0_NAME: local
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
-      KAFKA_CLUSTERS_0_ZOOKEEPER: ""  
-    ports:
-      - "9001:8080"
+  producer:
+    build: .
+    container_name: autoencoder-ransomware-defense_producer_1
     depends_on:
       - kafka
-
-  mongo:
-    image: mongo:6.0.18
-    restart: on-failure
     volumes:
-      - mongo_data:/data/db
-      - mongo_config:/data/configdb
-    ports:
-      - "27017:27017"
+      - .:/app
+    # 🌟 FIX: Explicit command for Kafka readiness and running the script
+    command: sh -c "
+      /usr/bin/nc -z kafka 9092;
+      while [ $$? -ne 0 ]; do
+        echo 'Waiting for Kafka to be ready...';
+        sleep 1;
+        /usr/bin/nc -z kafka 9092;
+      done;
+      echo 'Connection to kafka ($$(getent hosts kafka | awk '{ print $$1 }')) 9092 port [tcp/*] succeeded!';
+      echo 'Kafka is up. Starting producer.';
+      python3 kafka_lib/producer.py
+      "
+    networks:
+      - autoencoder-net
 
-  opensearch:
-    image: opensearchproject/opensearch:2.15.0
-    ulimits:
-      memlock:
-        soft: -1
-        hard: -1
-      nofile:
-        soft: 65536
-        hard: 65536
-    ports:
-      - "9200:9200"
-      - "9300:9300"
-    environment:
-      discovery.type: single-node
-      DISABLE_SECURITY_PLUGIN: "true"
-    volumes:
-      - opensearch:/usr/share/opensearch/data"
-
-  graylog:
-    image: graylog/graylog:6.1
+  consumer:
+    build: .
+    container_name: autoencoder-ransomware-defense_consumer_1
     depends_on:
-      - mongo
-      - opensearch
       - kafka
-    environment:
-      GRAYLOG_NODE_ID_FILE: /usr/share/graylog/data/config/node-id
-      GRAYLOG_HTTP_BIND_ADDRESS: 0.0.0.0:9000
-      GRAYLOG_ELASTICSEARCH_HOSTS: http://opensearch:9200
-      GRAYLOG_MONGODB_URI: mongodb://mongo:27017/graylog
-      GRAYLOG_REPORT_DISABLE_SANDBOX: "true"
-      GRAYLOG_HTTP_EXTERNAL_URI: http://127.0.0.1:9000/
-      GRAYLOG_PASSWORD_SECRET: ${GRAYLOG_PASSWORD_SECRET}
-      GRAYLOG_ROOT_PASSWORD_SHA2: ${GRAYLOG_ROOT_PASSWORD_SHA2}
-    ports:
-      - "9000:9000"
-      - "5044:5044"
-      - "5140:5140"
-      - "5140:5140/udp"
-      - "12201:12201"
-      - "12201:12201/udp"
-      - "13301:13301"
-      - "13302:13302"
     volumes:
-      - graylog_data:/usr/share/graylog/data
+      - .:/app
+    # 🌟 FIX: Explicit command for Kafka readiness and running the script
+    command: sh -c "
+      /usr/bin/nc -z kafka 9092;
+      while [ $$? -ne 0 ]; do
+        echo 'Waiting for Kafka to be ready...';
+        sleep 1;
+        /usr/bin/nc -z kafka 9092;
+      done;
+      echo 'Connection to kafka ($$(getent hosts kafka | awk '{ print $$1 }')) 9092 port [tcp/*] succeeded!';
+      echo 'Kafka is up. Starting consumer.';
+      python3 kafka_lib/consumer.py
+      "
+    networks:
+      - autoencoder-net
 
-volumes:
-  kafka_data:
-  mongo_data:
-  mongo_config:
-  opensearch:
-  graylog_data:
+  siem_dashboard:
+    build: .
+    container_name: siem_dashboard
+    depends_on:
+      - consumer # Depend on consumer (optional, but ensures ordering)
+    volumes:
+      - .:/app
+    ports:
+      - "8501:8501" # Streamlit UI exposed to host
+      # Port 8000 (FastAPI API) is accessible internally via the service name.
+    # 🌟 CRITICAL FIX: Run FastAPI API (port 8000) in the background and then run Streamlit (port 8501)
+    command: sh -c "
+      pip install fastapi uvicorn pydantic && 
+      python3 api.py & 
+      streamlit run dashboard.py --server.port 8501 --server.address 0.0.0.0
+      "
+    networks:
+      - autoencoder-net

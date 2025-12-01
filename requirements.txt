@@ -1,8 +1,15 @@
-torch
-numpy
+torch==2.2.0+cpu
+--extra-index-url https://download.pytorch.org/whl/cpu
+numpy<2
 pandas
 scikit-learn
 graypy
 python-dotenv
 setuptools
-
+kafka-python
+requests
+streamlit
+fastapi
+uvicorn
+pydantic
+joblib
