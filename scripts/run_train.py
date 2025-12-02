@@ -2,9 +2,9 @@ import torch
 from autoencoder.data import split_data
 from autoencoder.train import train_the_model
 
-train_data, split_data = split_data('data/simulation_logs_with_timestamp.csv')
+X_train, X_test = split_data('data/simulation_logs_with_timestamp.csv')
+train_tensor = torch.tensor(X_train.values, dtype=torch.float32)
 
-train_tensor = torch.tensor(train_data.values, dtype=torch.float32)
 
 input_dim = train_tensor.shape[1]
 

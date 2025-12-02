@@ -3,64 +3,21 @@ from kafka import KafkaConsumer
 import torch
 import pandas as pd
 import joblib
-import requests
+import sys
+import torch.nn.functional as F
+import numpy as np
+from collections import deque
+import os
 
-# 🌟 FIX PART 1: Import the model class from your module.py file
-# This import relies on the autoencoder/__init__.py file existing.
-from autoencoder.model import AutoEncoder 
+from autoencoder.data import preprocess
 
+try:
+    from autoencoder.model import AutoEncoder
+except ImportError:
+    print("❌ Could not import AutoEncoder class. Ensure autoencoder/model.py exists.")
+    sys.exit(1)
 
-MODEL_PATH = "models/autoencoder.pth"
-SCALER_PATH = "models/scaler.pkl"
-ENCODERS_PATH = "models/encoders.pkl"
-
-# 🛑 CRITICAL: DEFINE YOUR MODEL DIMENSION HERE
-# You previously confirmed 21 features. This MUST match the total columns
-# output by your preprocessing script (data.py).
-INPUT_DIM = 21 
-
-# 🌟 FIX PART 2: Correct model loading logic 🌟
-
-# 1. Instantiate the AutoEncoder class with its correct dimension
-model = AutoEncoder(input_dim=INPUT_DIM)
-
-# 2. Load the state dictionary (weights) from the file
-model_state = torch.load(MODEL_PATH, map_location=torch.device('cpu'))
-model.load_state_dict(model_state)
-
-# 3. Set to evaluation mode
-model.eval()
-
-scaler = joblib.load(SCALER_PATH)
-encoders = joblib.load(ENCODERS_PATH)
-
-
-def push_to_dashboard(event, score, severity):
-    """
-    Send the anomaly to Streamlit dashboard using the Docker service name.
-    """
-    try:
-        requests.post(
-            # 🌟 FIX PART 3: Use the Docker service name for inter-container communication
-            "http://siem_dashboard:8501/add_event",
-            json={
-                "event": event,
-                "score": score,
-                "severity": severity
-            },
-            timeout=1.0 
-        )
-    except requests.exceptions.RequestException:
-        # Dashboard may be closed or unreachable; ignore errors
-        pass
-    except Exception:
-        # Other potential errors
-        pass
-
-
-# ----------------------------
-# Kafka Consumer
-# ----------------------------
+# Kafka consumer
 consumer = KafkaConsumer(
     "mpesa-c2b-transactions",
     bootstrap_servers=["kafka:9092"],
@@ -69,67 +26,82 @@ consumer = KafkaConsumer(
     enable_auto_commit=True
 )
 
+# Parameters
+BATCH_SIZE = 10
+SLIDING_WINDOW_SIZE = 100  # Number of recent errors to compute threshold
+K_FACTOR = 1.5              # Sensitivity multiplier
+ROLLING_PARQUET_FILE = "dashboard/anomalies.parquet"
+MAX_ENTRIES = 1000          # Keep only latest 1000 anomalies
 
-# ----------------------------
-# Preprocessing for Each Event
-# ----------------------------
-def preprocess_event(event_dict):
-    df = pd.DataFrame([event_dict])
+# Sliding window to store recent errors
+recent_errors = deque(maxlen=SLIDING_WINDOW_SIZE)
 
-    # Apply label encoding
-    for col, encoder in encoders.items():
-        # Ensure the column exists before transforming
-        if col in df.columns:
-            df[col] = encoder.transform(df[col].astype(str))
-        
-    # Apply scaling
-    # NOTE: The data must have the exact same 21 columns as the model input
-    scaled = scaler.transform(df)
-
-    return torch.tensor(scaled, dtype=torch.float32)
-
-
-# ----------------------------
-# Anomaly Scoring
-# ----------------------------
-def score_event(event_tensor):
-    with torch.no_grad():
-        reconstructed = model(event_tensor)
-
-    # Calculate Mean Squared Error (MSE) for the reconstruction loss
-    loss = torch.mean((event_tensor - reconstructed) ** 2).item()
-    return loss
-
-
-# ----------------------------
-# Main Loop
-# ----------------------------
-def start_consumer():
-    print("📡 Listening for Kafka events... Dashboard mode enabled.\n")
-
+def preprocess_new_data(batch_size=BATCH_SIZE):
+    messages = []
     for msg in consumer:
-        event = msg.value
+        messages.append(msg.value)
+        if len(messages) >= batch_size:
+            break
+    if not messages:
+        return None
+    df = pd.DataFrame(messages)
+    scaled_df, _, _ = preprocess(df, save_scaler=False)
+    return df, scaled_df
 
-        # Convert → Tensor
-        try:
-            event_tensor = preprocess_event(event)
-        except ValueError as e:
-            print(f"Skipping event due to preprocessing error: {e}")
-            continue
+def compute_adaptive_threshold(errors_window, k=K_FACTOR):
+    """Compute threshold dynamically from recent errors."""
+    if not errors_window:
+        return 0.0
+    mean_err = np.mean(errors_window)
+    std_err = np.std(errors_window)
+    return mean_err + k * std_err
 
-        score = score_event(event_tensor)
+def save_anomalies(anomaly_df):
+    """Append anomalies to Parquet file and keep it rolling."""
+    if os.path.exists(ROLLING_PARQUET_FILE):
+        all_anomalies = pd.read_parquet(ROLLING_PARQUET_FILE)
+        all_anomalies = pd.concat([all_anomalies, anomaly_df]).tail(MAX_ENTRIES)
+    else:
+        all_anomalies = anomaly_df
+    all_anomalies.to_parquet(ROLLING_PARQUET_FILE, index=False)
 
-        # Determine severity
-        if score > 0.05:
-            severity = "red"       # high anomaly
-        elif score > 0.01:
-            severity = "yellow"    # suspicious
-        else:
-            severity = "green"     # normal
+def process_kafka_batch(batch_size=BATCH_SIZE):
+    try:
+        scaler = joblib.load("models/scaler.pkl")
+        encoders = joblib.load("models/encoders.pkl")
+    except:
+        print("❌ Missing scaler.pkl or encoders.pkl.")
+        return
 
-        # Send to Streamlit dashboard
-        push_to_dashboard(event, score, severity)
+    df_raw, df_scaled = preprocess_new_data(batch_size=batch_size)
+    if df_scaled is None or df_scaled.empty:
+        return
 
+    input_dim = df_scaled.shape[1]
+    model = AutoEncoder(input_dim)
+    model.load_state_dict(torch.load("models/autoencoder.pth"))
+    model.eval()
+
+    X_new = torch.tensor(df_scaled.values, dtype=torch.float32)
+    with torch.no_grad():
+        reconstructed = model(X_new)
+        batch_errors = F.mse_loss(reconstructed, X_new, reduction="none").mean(dim=1).numpy()
+
+    recent_errors.extend(batch_errors)
+    threshold = compute_adaptive_threshold(recent_errors, k=K_FACTOR)
+    anomalies_idx = np.where(batch_errors > threshold)[0]
+
+    if len(anomalies_idx) > 0:
+        anomaly_df = df_raw.iloc[anomalies_idx].copy()
+        anomaly_df["reconstruction_error"] = batch_errors[anomalies_idx]
+        anomaly_df["threshold"] = threshold
+        save_anomalies(anomaly_df)
+
+    print(f"Batch Errors: {batch_errors.tolist()}")
+    print(f"Adaptive Threshold: {threshold:.6f}")
+    print(f"Anomalies in batch: {len(anomalies_idx)}\n")
 
 if __name__ == "__main__":
-    start_consumer()
+    print("📡 Listening for Kafka messages with adaptive threshold...")
+    while True:
+        process_kafka_batch()

@@ -18,23 +18,27 @@ services:
       - autoencoder-net
 
   kafka:
-    image: confluentinc/cp-kafka:latest
-    container_name: autoencoder-ransomware-defense_kafka_1
-    depends_on:
-      - zookeeper
-    ports:
-      - "9092:9092"
-      - "29092:29092"
-    environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://0.0.0.0:29092
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-    networks:
-      - autoencoder-net
+      # 🌟 CRITICAL FIX: Change the image tag from 'latest' to a stable ZK-compatible version
+      image: confluentinc/cp-kafka:7.4.0 
+      container_name: autoencoder-ransomware-defense_kafka_1
+      depends_on:
+        - zookeeper
+      ports:
+        - "9092:9092"
+        - "29092:29092"
+      environment:
+        # These environment variables (ZOOKEEPER_CONNECT, LISTENERS, etc.) are correct for this version
+        KAFKA_BROKER_ID: 1
+        KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+        KAFKA_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://0.0.0.0:29092
+        KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+        KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+        KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+        KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+        # We no longer need to explicitly set KAFKA_PROCESS_ROLES: '' or KAFKA_CONTROLLER_QUORUM_VOTERS: '' 
+        # as this older version defaults correctly to ZK mode.
+      networks:
+        - autoencoder-net
 
   producer:
     build: .
@@ -84,17 +88,14 @@ services:
     build: .
     container_name: siem_dashboard
     depends_on:
-      - consumer # Depend on consumer (optional, but ensures ordering)
+      - consumer
     volumes:
       - .:/app
     ports:
-      - "8501:8501" # Streamlit UI exposed to host
-      # Port 8000 (FastAPI API) is accessible internally via the service name.
-    # 🌟 CRITICAL FIX: Run FastAPI API (port 8000) in the background and then run Streamlit (port 8501)
-    command: sh -c "
-      pip install fastapi uvicorn pydantic && 
-      python3 api.py & 
-      streamlit run dashboard.py --server.port 8501 --server.address 0.0.0.0
-      "
+      - "8501:8501"  
+    command: streamlit run dashboard/dashboard.py --server.port 8501 --server.address 0.0.0.0
+    networks:
+      - autoencoder-net
+
     networks:
       - autoencoder-net
