@@ -17,7 +17,6 @@ except ImportError:
     print("❌ Could not import AutoEncoder class. Ensure autoencoder/model.py exists.")
     sys.exit(1)
 
-# Kafka consumer
 consumer = KafkaConsumer(
     "mpesa-c2b-transactions",
     bootstrap_servers=["kafka:9092"],
@@ -28,12 +27,12 @@ consumer = KafkaConsumer(
 
 # Parameters
 BATCH_SIZE = 10
-SLIDING_WINDOW_SIZE = 100  # Number of recent errors to compute threshold
-K_FACTOR = 1.5              # Sensitivity multiplier
-ROLLING_PARQUET_FILE = "dashboard/anomalies.parquet"
-MAX_ENTRIES = 1000          # Keep only latest 1000 anomalies
+SLIDING_WINDOW_SIZE = 100
+K_FACTOR = 1.5
+CSV_FILE = "dashboard/anomalies.csv"
+MAX_ENTRIES = 1000
 
-# Sliding window to store recent errors
+# Sliding window for recent reconstruction errors
 recent_errors = deque(maxlen=SLIDING_WINDOW_SIZE)
 
 def preprocess_new_data(batch_size=BATCH_SIZE):
@@ -43,13 +42,12 @@ def preprocess_new_data(batch_size=BATCH_SIZE):
         if len(messages) >= batch_size:
             break
     if not messages:
-        return None
+        return None, None
     df = pd.DataFrame(messages)
     scaled_df, _, _ = preprocess(df, save_scaler=False)
     return df, scaled_df
 
 def compute_adaptive_threshold(errors_window, k=K_FACTOR):
-    """Compute threshold dynamically from recent errors."""
     if not errors_window:
         return 0.0
     mean_err = np.mean(errors_window)
@@ -57,13 +55,14 @@ def compute_adaptive_threshold(errors_window, k=K_FACTOR):
     return mean_err + k * std_err
 
 def save_anomalies(anomaly_df):
-    """Append anomalies to Parquet file and keep it rolling."""
-    if os.path.exists(ROLLING_PARQUET_FILE):
-        all_anomalies = pd.read_parquet(ROLLING_PARQUET_FILE)
+    """Append anomalies to CSV only and keep it rolling."""
+    if os.path.exists(CSV_FILE):
+        all_anomalies = pd.read_csv(CSV_FILE)
         all_anomalies = pd.concat([all_anomalies, anomaly_df]).tail(MAX_ENTRIES)
     else:
         all_anomalies = anomaly_df
-    all_anomalies.to_parquet(ROLLING_PARQUET_FILE, index=False)
+    all_anomalies.to_csv(CSV_FILE, index=False)
+    print(f"💾 Saved {len(anomaly_df)} anomalies. Total stored: {len(all_anomalies)}")
 
 def process_kafka_batch(batch_size=BATCH_SIZE):
     try:
@@ -96,6 +95,7 @@ def process_kafka_batch(batch_size=BATCH_SIZE):
         anomaly_df["reconstruction_error"] = batch_errors[anomalies_idx]
         anomaly_df["threshold"] = threshold
         save_anomalies(anomaly_df)
+        print(f"💥 {len(anomalies_idx)} anomalies detected in this batch.")
 
     print(f"Batch Errors: {batch_errors.tolist()}")
     print(f"Adaptive Threshold: {threshold:.6f}")
